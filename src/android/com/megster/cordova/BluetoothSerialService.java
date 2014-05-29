@@ -1,29 +1,36 @@
 package com.megster.cordova;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.util.UUID;
-
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothServerSocket;
 import android.bluetooth.BluetoothSocket;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
 import android.util.Log;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.lang.reflect.Method;
+import java.util.UUID;
 
 /**
  * This class does all the work for setting up and managing Bluetooth
  * connections with other devices. It has a thread that listens for
  * incoming connections, a thread for connecting with a device, and a
  * thread for performing data transmissions when connected.
- *
+ * <p/>
  * This code was based on the Android SDK BluetoothChat Sample
  * $ANDROID_SDK/samples/android-17/BluetoothChat
  */
 public class BluetoothSerialService {
+
+    private OutputStream _mmOutStream;
 
     // Debugging
     private static final String TAG = "BluetoothSerialService";
@@ -57,17 +64,33 @@ public class BluetoothSerialService {
 
     /**
      * Constructor. Prepares a new BluetoothSerial session.
-     * @param handler  A Handler to send messages back to the UI Activity
+     *
+     * @param handler A Handler to send messages back to the UI Activity
      */
-    public BluetoothSerialService(Handler handler) {
+    public BluetoothSerialService(Context ctx, Handler handler) {
         mAdapter = BluetoothAdapter.getDefaultAdapter();
         mState = STATE_NONE;
         mHandler = handler;
+
+        IntentFilter filter = new IntentFilter(BluetoothAdapter.ACTION_DISCOVERY_STARTED);
+        ctx.registerReceiver(_receiver, filter);
+
+        filter = new IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED);
+        ctx.registerReceiver(_receiver, filter);
+
+        filter = new IntentFilter(BluetoothAdapter.ACTION_DISCOVERY_FINISHED);
+        ctx.registerReceiver(_receiver, filter);
+
+        filter = new IntentFilter(BluetoothDevice.ACTION_FOUND);
+        ctx.registerReceiver(_receiver, filter);
+
+        this.listen();
     }
 
     /**
      * Set the current state of the chat connection
-     * @param state  An integer defining the current connection state
+     *
+     * @param state An integer defining the current connection state
      */
     private synchronized void setState(int state) {
         if (D) Log.d(TAG, "setState() " + mState + " -> " + state);
@@ -78,42 +101,158 @@ public class BluetoothSerialService {
     }
 
     /**
-     * Return the current connection state. */
+     * Return the current connection state.
+     */
     public synchronized int getState() {
         return mState;
     }
 
     /**
      * Start the chat service. Specifically start AcceptThread to begin a
-     * session in listening (server) mode. Called by the Activity onResume() */
+     * session in listening (server) mode. Called by the Activity onResume()
+     */
     public synchronized void start() {
         if (D) Log.d(TAG, "start");
 
         // Cancel any thread attempting to make a connection
-        if (mConnectThread != null) {mConnectThread.cancel(); mConnectThread = null;}
+        if (mConnectThread != null) {
+            mConnectThread.cancel();
+            mConnectThread = null;
+        }
 
         // Cancel any thread currently running a connection
-        if (mConnectedThread != null) {mConnectedThread.cancel(); mConnectedThread = null;}
+        if (mConnectedThread != null) {
+            mConnectedThread.cancel();
+            mConnectedThread = null;
+        }
 
-        setState(STATE_NONE);
+        listen();
 
-//      Listen isn't working with Arduino. Ignore since assuming the phone will initiate the connection.
-//        setState(STATE_LISTEN);
-//
-//        // Start the thread to listen on a BluetoothServerSocket
-//        if (mSecureAcceptThread == null) {
-//            mSecureAcceptThread = new AcceptThread(true);
-//            mSecureAcceptThread.start();
-//        }
-//        if (mInsecureAcceptThread == null) {
-//            mInsecureAcceptThread = new AcceptThread(false);
-//            mInsecureAcceptThread.start();
-//        }
+//        Listen isn 't working with Arduino. Ignore since assuming the phone will initiate the connection.
+    }
+
+    public synchronized void listen() {
+        setState(STATE_LISTEN);
+
+        // Start the thread to listen on a BluetoothServerSocket
+        if (mSecureAcceptThread == null) {
+            mSecureAcceptThread = new AcceptThread(true);
+            mSecureAcceptThread.start();
+        }
+        if (mInsecureAcceptThread == null) {
+            mInsecureAcceptThread = new AcceptThread(false);
+            mInsecureAcceptThread.start();
+        }
+    }
+
+
+    /**
+     * See if there is an ongoing device discovery process going on.
+     *
+     * @return True if Bluetooth is on and device discovery is in progress. Otherwise false.
+     * @throws Exception If there is an error checking whether the discovery process is in progress.
+     */
+    public boolean isDiscovering() throws Exception {
+        try {
+            return mAdapter.isEnabled() && mAdapter.isDiscovering();
+        } catch (Exception e) {
+            throw e;
+        }
+    }
+
+
+    /**
+     * Start a device discovery process. Results are broadcasted to the
+     * Handler registered to this class. This will not cancel any current
+     * discovery process, but you should do it anyways.
+     *
+     * @throws Exception If there is an error starting the discovery process.
+     * @see BluetoothDevice
+     */
+    public void startDiscovery() throws Exception {
+        try {
+            if (!mAdapter.startDiscovery()) {
+                throw new Exception("Error starting discovery.");
+            }
+        } catch (Exception e) {
+            throw e;
+        }
     }
 
     /**
+     * Cancel the current discovery process.
+     *
+     * @throws Exception If there is an error with canceling the current discovery process.
+     */
+    public void stopDiscovery() throws Exception {
+        try {
+            if (!mAdapter.cancelDiscovery()) {
+                if (!mAdapter.isDiscovering()) {
+                    throw new Exception("There is no discovery process in progress.");
+                } else {
+                    throw new Exception("Error canceling the discovery process.");
+                }
+            }
+        } catch (Exception e) {
+            throw e;
+        }
+    }
+
+
+    /**
+     * Check if the device at given address is bonded with this device.
+     *
+     * @param address The device we want to check against.
+     * @return Flag indicating whether the devices are bonded.
+     * @throws Exception If there is a problem deducing the bond state. A wrong address might also cause this. :)
+     * @see BluetoothDevice
+     */
+    public boolean isBonded(String address) throws Exception {
+        try {
+            BluetoothDevice device = mAdapter.getRemoteDevice(address);
+            return device.getBondState() == BluetoothDevice.BOND_BONDED;
+        } catch (Exception e) {
+            throw e;
+        }
+    }
+
+    /**
+     * Attempt to bond with the device at given address.
+     *
+     * @param address The address of the device to bond with.
+     * @throws Exception If there is an error bonding with the device.
+     * @see BluetoothDevice
+     */
+    public void createBond(String address) throws Exception {
+        try {
+            BluetoothDevice device = mAdapter.getRemoteDevice(address);
+            if (device.getBondState() == BluetoothDevice.BOND_BONDED) {
+                throw new Exception("The device is alraedy paired.");
+            }
+
+            Method createBond = device.getClass().getMethod("createBond");
+            if (!(Boolean) createBond.invoke(device)) {
+                throw new Exception("Failed to start the bonding process with given device.");
+            }
+        } catch (Exception e) {
+            throw e;
+        }
+    }
+
+    /**
+     * Check if there is an ongoing connection attempt.
+     *
+     * @return True if a connection attempt is in progress.
+     */
+    public boolean isConnecting() {
+        return mState == STATE_CONNECTED;
+    }
+
+
+    /**
      * Start the ConnectThread to initiate a connection to a remote device.
-     * @param device  The BluetoothDevice to connect
+     *
+     * @param device The BluetoothDevice to connect
      * @param secure Socket Security type - Secure (true) , Insecure (false)
      */
     public synchronized void connect(BluetoothDevice device, boolean secure) {
@@ -121,11 +260,17 @@ public class BluetoothSerialService {
 
         // Cancel any thread attempting to make a connection
         if (mState == STATE_CONNECTING) {
-            if (mConnectThread != null) {mConnectThread.cancel(); mConnectThread = null;}
+            if (mConnectThread != null) {
+                mConnectThread.cancel();
+                mConnectThread = null;
+            }
         }
 
         // Cancel any thread currently running a connection
-        if (mConnectedThread != null) {mConnectedThread.cancel(); mConnectedThread = null;}
+        if (mConnectedThread != null) {
+            mConnectedThread.cancel();
+            mConnectedThread = null;
+        }
 
         // Start the thread to connect with the given device
         mConnectThread = new ConnectThread(device, secure);
@@ -135,17 +280,24 @@ public class BluetoothSerialService {
 
     /**
      * Start the ConnectedThread to begin managing a Bluetooth connection
-     * @param socket  The BluetoothSocket on which the connection was made
-     * @param device  The BluetoothDevice that has been connected
+     *
+     * @param socket The BluetoothSocket on which the connection was made
+     * @param device The BluetoothDevice that has been connected
      */
     public synchronized void connected(BluetoothSocket socket, BluetoothDevice device, final String socketType) {
         if (D) Log.d(TAG, "connected, Socket Type:" + socketType);
 
         // Cancel the thread that completed the connection
-        if (mConnectThread != null) {mConnectThread.cancel(); mConnectThread = null;}
+        if (mConnectThread != null) {
+            mConnectThread.cancel();
+            mConnectThread = null;
+        }
 
         // Cancel any thread currently running a connection
-        if (mConnectedThread != null) {mConnectedThread.cancel(); mConnectedThread = null;}
+        if (mConnectedThread != null) {
+            mConnectedThread.cancel();
+            mConnectedThread = null;
+        }
 
         // Cancel the accept thread because we only want to connect to one device
         if (mSecureAcceptThread != null) {
@@ -201,6 +353,7 @@ public class BluetoothSerialService {
 
     /**
      * Write to the ConnectedThread in an unsynchronized manner
+     *
      * @param out The bytes to write
      * @see ConnectedThread#write(byte[])
      */
@@ -209,11 +362,22 @@ public class BluetoothSerialService {
         ConnectedThread r;
         // Synchronize a copy of the ConnectedThread
         synchronized (this) {
-            if (mState != STATE_CONNECTED) return;
-            r = mConnectedThread;
+            if (mState == STATE_LISTEN && _mmOutStream != null) {
+                try {
+                    _mmOutStream.write(out);
+                    mHandler.obtainMessage(BluetoothSerial.MESSAGE_WRITE, -1, -1, out).sendToTarget();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+            if (mState == STATE_CONNECTED) {
+                r = mConnectedThread;
+                r.write(out);
+            }
+
         }
         // Perform the write unsynchronized
-        r.write(out);
+
     }
 
     /**
@@ -258,7 +422,7 @@ public class BluetoothSerialService {
 
         public AcceptThread(boolean secure) {
             BluetoothServerSocket tmp = null;
-            mSocketType = secure ? "Secure":"Insecure";
+            mSocketType = secure ? "Secure" : "Insecure";
 
             // Create a new listening server socket
             try {
@@ -295,6 +459,8 @@ public class BluetoothSerialService {
                     synchronized (BluetoothSerialService.this) {
                         switch (mState) {
                             case STATE_LISTEN:
+                                connected(socket, socket.getRemoteDevice(), mSocketType);
+                                break;
                             case STATE_CONNECTING:
                                 // Situation normal. Start the connected thread.
                                 connected(socket, socket.getRemoteDevice(),
@@ -347,10 +513,10 @@ public class BluetoothSerialService {
             try {
                 if (secure) {
                     // tmp = device.createRfcommSocketToServiceRecord(MY_UUID_SECURE);
-                    tmp = device.createRfcommSocketToServiceRecord(UUID_SPP);
+                    tmp = device.createRfcommSocketToServiceRecord(MY_UUID_SECURE);
                 } else {
                     //tmp = device.createInsecureRfcommSocketToServiceRecord(MY_UUID_INSECURE);
-                    tmp = device.createInsecureRfcommSocketToServiceRecord(UUID_SPP);
+                    tmp = device.createInsecureRfcommSocketToServiceRecord(MY_UUID_INSECURE);
                 }
             } catch (IOException e) {
                 Log.e(TAG, "Socket Type: " + mSocketType + "create() failed", e);
@@ -454,7 +620,8 @@ public class BluetoothSerialService {
 
         /**
          * Write to the connected OutStream.
-         * @param buffer  The bytes to write
+         *
+         * @param buffer The bytes to write
          */
         public void write(byte[] buffer) {
             try {
@@ -476,4 +643,50 @@ public class BluetoothSerialService {
             }
         }
     }
+
+    private final BroadcastReceiver _receiver = new BroadcastReceiver() {
+
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+
+            if (BluetoothAdapter.ACTION_DISCOVERY_STARTED.equals(action)) {
+                mHandler.obtainMessage(BluetoothSerial.MESSAGE_DISCOVERY_STARTED).sendToTarget();
+            } else if (BluetoothAdapter.ACTION_DISCOVERY_FINISHED.equals(action)) {
+                mHandler.obtainMessage(BluetoothSerial.MESSAGE_DISCOVERY_FINISHED).sendToTarget();
+            } else if (BluetoothDevice.ACTION_FOUND.equals(action)) {
+                try {
+                    BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+
+                    Bundle bundle = new Bundle();
+                    bundle.putString(BluetoothSerial.DATA_DEVICE_NAME, device.getName());
+                    bundle.putString(BluetoothSerial.DATA_DEVICE_ADDRESS, device.getAddress());
+
+                    Message msg = mHandler.obtainMessage(BluetoothSerial.MESSAGE_DEVICE_FOUND);
+                    msg.setData(bundle);
+                    msg.sendToTarget();
+                } catch (Exception e) {
+                    Log.e(TAG, "Exception" + e.getMessage());
+                }
+            } else if (BluetoothDevice.ACTION_BOND_STATE_CHANGED.equals(action)) {
+                int bondState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, 0);
+                BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+
+                if (bondState == BluetoothDevice.BOND_BONDED) {
+                    String name = device.getName();
+                    String address = device.getAddress();
+
+                    Bundle bundle = new Bundle();
+                    bundle.putString(BluetoothSerial.DATA_DEVICE_NAME, name);
+                    bundle.putString(BluetoothSerial.DATA_DEVICE_ADDRESS, address);
+
+                    Message msg = mHandler.obtainMessage(BluetoothSerial.MESSAGE_DEVICE_BONDED);
+                    msg.setData(bundle);
+                    msg.sendToTarget();
+                }
+            }
+        }
+    };
+
+
 }

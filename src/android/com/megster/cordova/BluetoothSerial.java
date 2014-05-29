@@ -5,19 +5,20 @@ import android.bluetooth.BluetoothDevice;
 import android.os.Handler;
 import android.os.Message;
 import android.util.Log;
-// kludgy imports to support 2.9 and 3.0 due to package changes
-import org.apache.cordova.*;
-import org.apache.cordova.api.*;
-// import org.apache.cordova.CordovaArgs;
-// import org.apache.cordova.CordovaPlugin;
-// import org.apache.cordova.CallbackContext;
-// import org.apache.cordova.PluginResult;
-// import org.apache.cordova.LOG;
+import org.apache.cordova.bluetooth.BluetoothError;
+import org.apache.cordova.bluetooth.BluetoothWrapper;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.util.Set;
+
+// kludgy imports to support 2.9 and 3.0 due to package changes
+// import org.apache.cordova.CordovaArgs;
+// import org.apache.cordova.CordovaPlugin;
+// import org.apache.cordova.CallbackContext;
+// import org.apache.cordova.PluginResult;
+// import org.apache.cordova.LOG;
 
 /**
  * PhoneGap Plugin for Serial Communication over Bluetooth
@@ -39,9 +40,17 @@ public class BluetoothSerial extends CordovaPlugin {
     private static final String IS_CONNECTED = "isConnected";
     private static final String CLEAR = "clear";
 
+    private static final String ACTION_IS_DISCOVERING = "isDiscovering";
+    private static final String ACTION_START_DISCOVERY = "startDiscovery";
+    private static final String ACTION_STOP_DISCOVERY = "stopDiscovery";
+    private static final String ACTION_IS_PAIRED = "isPaired";
+    private static final String ACTION_PAIR = "pair";
+
     // callbacks
     private CallbackContext connectCallback;
     private CallbackContext dataAvailableCallback;
+    private CallbackContext discoveryCallback;
+    private CallbackContext pairingCallback;
 
     private BluetoothAdapter bluetoothAdapter;
     private BluetoothSerialService bluetoothSerialService;
@@ -56,10 +65,18 @@ public class BluetoothSerial extends CordovaPlugin {
     public static final int MESSAGE_WRITE = 3;
     public static final int MESSAGE_DEVICE_NAME = 4;
     public static final int MESSAGE_TOAST = 5;
+    public static final int MESSAGE_DISCOVERY_STARTED = 6;
+    public static final int MESSAGE_DISCOVERY_FINISHED = 7;
+    public static final int MESSAGE_DEVICE_FOUND = 8;
+    public static final int MESSAGE_DEVICE_BONDED = 9;
 
     // Key names received from the BluetoothChatService Handler
     public static final String DEVICE_NAME = "device_name";
     public static final String TOAST = "toast";
+    public static final String DATA_DEVICE_NAME = "name";
+    public static final String DATA_DEVICE_ADDRESS = "address";
+
+    private boolean _wasDiscoveryCanceled;
 
     StringBuffer buffer = new StringBuffer();
     private String delimiter;
@@ -74,11 +91,11 @@ public class BluetoothSerial extends CordovaPlugin {
         }
 
         if (bluetoothSerialService == null) {
-            bluetoothSerialService = new BluetoothSerialService(mHandler);
+            bluetoothSerialService = new BluetoothSerialService(cordova.getActivity().getBaseContext(), mHandler);
         }
 
         boolean validAction = true;
-        
+
         if (action.equals(LIST)) {
 
             listBondedDevices(callbackContext);
@@ -138,15 +155,15 @@ public class BluetoothSerial extends CordovaPlugin {
         } else if (action.equals(IS_ENABLED)) {
 
             if (bluetoothAdapter.isEnabled()) {
-                callbackContext.success();                
+                callbackContext.success();
             } else {
                 callbackContext.error("Bluetooth is disabled.");
-            }            
+            }
 
         } else if (action.equals(IS_CONNECTED)) {
-            
+
             if (bluetoothSerialService.getState() == BluetoothSerialService.STATE_CONNECTED) {
-                callbackContext.success();                
+                callbackContext.success();
             } else {
                 callbackContext.error("Not connected.");
             }
@@ -156,6 +173,36 @@ public class BluetoothSerial extends CordovaPlugin {
             buffer.setLength(0);
             callbackContext.success();
 
+        } else if (action.equals(ACTION_IS_DISCOVERING)) {
+            try {
+                callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.OK, bluetoothSerialService.isDiscovering()));
+            } catch (Exception e) {
+                this.error(callbackContext, e.getMessage(), BluetoothError.ERR_UNKNOWN);
+            }
+        } else if (action.equals(ACTION_START_DISCOVERY)) {
+            startDiscovery(args, callbackContext);
+        } else if (action.equals(ACTION_STOP_DISCOVERY)) {
+            stopDiscovery(args, callbackContext);
+        } else if (ACTION_IS_PAIRED.equals(action)) {
+            try {
+                String address = args.getString(0);
+                callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.OK, bluetoothSerialService.isBonded(address)));
+            } catch (Exception e) {
+                this.error(callbackContext, e.getMessage(), BluetoothError.ERR_UNKNOWN);
+            }
+        } else if (ACTION_PAIR.equals(action)) {
+            if (pairingCallback != null) {
+                this.error(callbackContext, "Pairing process is already in progress.", BluetoothError.ERR_PAIRING_IN_PROGRESS);
+            } else {
+                try {
+                    String address = args.getString(0);
+                    bluetoothSerialService.createBond(address);
+                    pairingCallback = callbackContext;
+                } catch (Exception e) {
+                    pairingCallback = null;
+                    this.error(callbackContext, e.getMessage(), BluetoothError.ERR_UNKNOWN);
+                }
+            }
         } else {
 
             validAction = false;
@@ -170,6 +217,77 @@ public class BluetoothSerial extends CordovaPlugin {
         super.onDestroy();
         if (bluetoothSerialService != null) {
             bluetoothSerialService.stop();
+        }
+    }
+
+
+    /**
+     * Start a device discovery.
+     *
+     * @param args        Arguments given.
+     * @param callbackCtx Where to send results.
+     */
+    private void startDiscovery(CordovaArgs args, CallbackContext callbackCtx) {
+        // TODO Someday add an option to fetch UUIDs at the same time
+
+        try {
+            if (bluetoothSerialService.isConnecting()) {
+                this.error(callbackCtx, "A Connection attempt is in progress.", BluetoothError.ERR_CONNECTING_IN_PROGRESS);
+            } else {
+                if (bluetoothSerialService.isDiscovering()) {
+                    _wasDiscoveryCanceled = true;
+                    bluetoothSerialService.stopDiscovery();
+
+                    if (discoveryCallback != null) {
+                        this.error(discoveryCallback,
+                                "Discovery was stopped because a new discovery was started.",
+                                BluetoothError.ERR_DISCOVERY_RESTARTED
+                        );
+                        discoveryCallback = null;
+                    }
+                }
+
+                bluetoothSerialService.startDiscovery();
+
+                PluginResult result = new PluginResult(PluginResult.Status.NO_RESULT);
+                result.setKeepCallback(true);
+                callbackCtx.sendPluginResult(result);
+
+                discoveryCallback = callbackCtx;
+            }
+        } catch (Exception e) {
+            this.error(callbackCtx, e.getMessage(), BluetoothError.ERR_UNKNOWN);
+        }
+    }
+
+
+    /**
+     * Stop device discovery.
+     *
+     * @param args        Arguments given.
+     * @param callbackCtx Where to send results.
+     */
+    private void stopDiscovery(CordovaArgs args, CallbackContext callbackCtx) {
+        try {
+            if (bluetoothSerialService.isDiscovering()) {
+                _wasDiscoveryCanceled = true;
+                bluetoothSerialService.stopDiscovery();
+
+                if (discoveryCallback != null) {
+                    this.error(discoveryCallback,
+                            "Discovery was cancelled.",
+                            BluetoothError.ERR_DISCOVERY_CANCELED
+                    );
+
+                    discoveryCallback = null;
+                }
+
+                callbackCtx.success();
+            } else {
+                this.error(callbackCtx, "There is no discovery to cancel.", BluetoothError.ERR_UNKNOWN);
+            }
+        } catch (Exception e) {
+            this.error(callbackCtx, e.getMessage(), BluetoothError.ERR_UNKNOWN);
         }
     }
 
@@ -212,18 +330,18 @@ public class BluetoothSerial extends CordovaPlugin {
     // Consider replacing with normal callbacks
     private final Handler mHandler = new Handler() {
 
-         public void handleMessage(Message msg) {
-             switch (msg.what) {
-                 case MESSAGE_READ:
-                    buffer.append((String)msg.obj);
+        public void handleMessage(Message msg) {
+            switch (msg.what) {
+                case MESSAGE_READ:
+                    buffer.append((String) msg.obj);
 
                     if (dataAvailableCallback != null) {
                         sendDataToSubscriber();
                     }
                     break;
-                 case MESSAGE_STATE_CHANGE:
+                case MESSAGE_STATE_CHANGE:
 
-                    if(D) Log.i(TAG, "MESSAGE_STATE_CHANGE: " + msg.arg1);
+                    if (D) Log.i(TAG, "MESSAGE_STATE_CHANGE: " + msg.arg1);
                     switch (msg.arg1) {
                         case BluetoothSerialService.STATE_CONNECTED:
                             Log.i(TAG, "BluetoothSerialService.STATE_CONNECTED");
@@ -252,14 +370,85 @@ public class BluetoothSerial extends CordovaPlugin {
                     String message = msg.getData().getString(TOAST);
                     notifyConnectionLost(message);
                     break;
-             }
-         }
+                case MESSAGE_DISCOVERY_STARTED:
+                    _wasDiscoveryCanceled = false;
+                    break;
+                case MESSAGE_DISCOVERY_FINISHED:
+                    if (!_wasDiscoveryCanceled) {
+                        if (discoveryCallback != null) {
+                            PluginResult result = new PluginResult(PluginResult.Status.OK, false);
+                            discoveryCallback.sendPluginResult(result);
+                            discoveryCallback = null;
+                        }
+                    }
+                    break;
+                case MESSAGE_DEVICE_FOUND:
+                    try {
+                        String name = msg.getData().getString(DATA_DEVICE_NAME);
+                        String address = msg.getData().getString(DATA_DEVICE_ADDRESS);
+
+                        JSONObject device = new JSONObject();
+                        device.put("name", name);
+                        device.put("address", address);
+
+                        // Send one device at a time, keeping callback to be used again
+                        if (discoveryCallback != null) {
+                            PluginResult result = new PluginResult(PluginResult.Status.OK, device);
+                            result.setKeepCallback(true);
+                            discoveryCallback.sendPluginResult(result);
+                        } else {
+                            Log.e(TAG, "CallbackContext for discovery doesn't exist.");
+                        }
+                    } catch (JSONException e) {
+                        if (discoveryCallback != null) {
+                            BluetoothSerial.this.error(discoveryCallback,
+                                    e.getMessage(),
+                                    BluetoothError.ERR_UNKNOWN
+                            );
+                            discoveryCallback = null;
+                        }
+                    }
+
+                    break;
+
+                case MESSAGE_DEVICE_BONDED:
+
+                    try {
+                        String name = msg.getData().getString(BluetoothWrapper.DATA_DEVICE_NAME);
+                        String address = msg.getData().getString(BluetoothWrapper.DATA_DEVICE_ADDRESS);
+
+                        JSONObject bondedDevice = new JSONObject();
+                        bondedDevice.put("name", name);
+                        bondedDevice.put("address", address);
+
+                        if (pairingCallback != null) {
+                            pairingCallback.success(bondedDevice);
+                            pairingCallback = null;
+                        } else {
+                            Log.e(TAG, "CallbackContext for pairing doesn't exist.");
+                        }
+                    } catch (Exception e) {
+                        if (pairingCallback != null) {
+                            BluetoothSerial.this.error(pairingCallback,
+                                    e.getMessage(), BluetoothError.ERR_PAIRING_FAILED
+                            );
+                            pairingCallback = null;
+                        }
+                    }
+
+                    break;
+
+            }
+        }
     };
 
     private void notifyConnectionLost(String error) {
         if (connectCallback != null) {
             connectCallback.error(error);
             connectCallback = null;
+        }
+        if (dataAvailableCallback != null) {
+            dataAvailableCallback.error(error);
         }
     }
 
@@ -301,5 +490,17 @@ public class BluetoothSerial extends CordovaPlugin {
             buffer.delete(0, index + c.length());
         }
         return data;
+    }
+
+    private void error(CallbackContext ctx, String msg, int code) {
+        try {
+            JSONObject result = new JSONObject();
+            result.put("message", msg);
+            result.put("code", code);
+
+            ctx.error(result);
+        } catch (Exception e) {
+            Log.e(TAG, "Error with... error raising, " + e.getMessage());
+        }
     }
 }
