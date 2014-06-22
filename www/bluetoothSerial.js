@@ -30,11 +30,11 @@ cordova.define("com.megster.cordova.bluetoothserial.bluetoothSerial", function (
             cordova.exec(success, failure, "BluetoothSerial", "stopDiscovery", []);
         },
 
-        isPaired: function (address,success, failure) {
+        isPaired: function (address, success, failure) {
             cordova.exec(success, failure, "BluetoothSerial", "isPaired", [address]);
         },
 
-        pair: function (address,success, failure) {
+        pair: function (address, success, failure) {
             cordova.exec(success, failure, "BluetoothSerial", "pair", [address]);
         },
 

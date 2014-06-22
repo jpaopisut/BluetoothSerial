@@ -1,9 +1,6 @@
 package com.megster.cordova;
 
-import android.bluetooth.BluetoothAdapter;
-import android.bluetooth.BluetoothDevice;
-import android.bluetooth.BluetoothServerSocket;
-import android.bluetooth.BluetoothSocket;
+import android.bluetooth.*;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -39,11 +36,6 @@ public class BluetoothSerialService {
     // Name for the SDP record when creating server socket
     private static final String NAME_SECURE = "PhoneGapBluetoothSerialServiceSecure";
     private static final String NAME_INSECURE = "PhoneGapBluetoothSerialServiceInSecure";
-
-    // Unique UUID for this application
-    private static final UUID MY_UUID_SECURE = UUID.fromString("7A9C3B55-78D0-44A7-A94E-A93E3FE118CE");
-    private static final UUID MY_UUID_INSECURE = UUID.fromString("23F18142-B389-4772-93BD-52BDBB2C03E9");
-
     // Well known SPP UUID
     private static final UUID UUID_SPP = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");
 
@@ -62,12 +54,15 @@ public class BluetoothSerialService {
     public static final int STATE_CONNECTING = 2; // now initiating an outgoing connection
     public static final int STATE_CONNECTED = 3;  // now connected to a remote device
 
+    private Context ctx;
+
     /**
      * Constructor. Prepares a new BluetoothSerial session.
      *
      * @param handler A Handler to send messages back to the UI Activity
      */
     public BluetoothSerialService(Context ctx, Handler handler) {
+        this.ctx = ctx;
         mAdapter = BluetoothAdapter.getDefaultAdapter();
         mState = STATE_NONE;
         mHandler = handler;
@@ -179,6 +174,7 @@ public class BluetoothSerialService {
         }
     }
 
+
     /**
      * Cancel the current discovery process.
      *
@@ -225,6 +221,7 @@ public class BluetoothSerialService {
      */
     public void createBond(String address) throws Exception {
         try {
+
             BluetoothDevice device = mAdapter.getRemoteDevice(address);
             if (device.getBondState() == BluetoothDevice.BOND_BONDED) {
                 throw new Exception("The device is alraedy paired.");
@@ -234,6 +231,8 @@ public class BluetoothSerialService {
             if (!(Boolean) createBond.invoke(device)) {
                 throw new Exception("Failed to start the bonding process with given device.");
             }
+
+
         } catch (Exception e) {
             throw e;
         }
@@ -427,9 +426,9 @@ public class BluetoothSerialService {
             // Create a new listening server socket
             try {
                 if (secure) {
-                    tmp = mAdapter.listenUsingRfcommWithServiceRecord(NAME_SECURE, MY_UUID_SECURE);
+                    tmp = mAdapter.listenUsingRfcommWithServiceRecord(NAME_SECURE, UUID_SPP);
                 } else {
-                    tmp = mAdapter.listenUsingInsecureRfcommWithServiceRecord(NAME_INSECURE, MY_UUID_INSECURE);
+                    tmp = mAdapter.listenUsingInsecureRfcommWithServiceRecord(NAME_INSECURE, UUID_SPP);
                 }
             } catch (IOException e) {
                 Log.e(TAG, "Socket Type: " + mSocketType + "listen() failed", e);
@@ -511,13 +510,8 @@ public class BluetoothSerialService {
 
             // Get a BluetoothSocket for a connection with the given BluetoothDevice
             try {
-                if (secure) {
-                    // tmp = device.createRfcommSocketToServiceRecord(MY_UUID_SECURE);
-                    tmp = device.createRfcommSocketToServiceRecord(MY_UUID_SECURE);
-                } else {
-                    //tmp = device.createInsecureRfcommSocketToServiceRecord(MY_UUID_INSECURE);
-                    tmp = device.createInsecureRfcommSocketToServiceRecord(MY_UUID_INSECURE);
-                }
+                tmp = device.createInsecureRfcommSocketToServiceRecord(UUID_SPP);
+
             } catch (IOException e) {
                 Log.e(TAG, "Socket Type: " + mSocketType + "create() failed", e);
             }
@@ -657,7 +651,9 @@ public class BluetoothSerialService {
             } else if (BluetoothDevice.ACTION_FOUND.equals(action)) {
                 try {
                     BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
-
+                    if (!device.getName().toLowerCase().equals("callbell")) {
+                        return;
+                    }
                     Bundle bundle = new Bundle();
                     bundle.putString(BluetoothSerial.DATA_DEVICE_NAME, device.getName());
                     bundle.putString(BluetoothSerial.DATA_DEVICE_ADDRESS, device.getAddress());

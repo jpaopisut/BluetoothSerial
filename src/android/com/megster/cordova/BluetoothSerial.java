@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothDevice;
 import android.os.Handler;
 import android.os.Message;
 import android.util.Log;
+import org.apache.cordova.*;
 import org.apache.cordova.bluetooth.BluetoothError;
 import org.apache.cordova.bluetooth.BluetoothWrapper;
 import org.json.JSONArray;
@@ -489,7 +490,7 @@ public class BluetoothSerial extends CordovaPlugin {
             data = buffer.substring(0, index + c.length());
             buffer.delete(0, index + c.length());
         }
-        return data;
+        return data.toString();
     }
 
     private void error(CallbackContext ctx, String msg, int code) {
