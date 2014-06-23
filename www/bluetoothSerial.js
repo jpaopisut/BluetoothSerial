@@ -25,10 +25,6 @@ module.exports = {
             cordova.exec(success, failure, "BluetoothSerial", "stopDiscovery", []);
         },
 
-        stopDiscovery: function (success, failure) {
-            cordova.exec(success, failure, "BluetoothSerial", "stopDiscovery", []);
-        },
-
         isPaired: function (address, success, failure) {
             cordova.exec(success, failure, "BluetoothSerial", "isPaired", [address]);
         },

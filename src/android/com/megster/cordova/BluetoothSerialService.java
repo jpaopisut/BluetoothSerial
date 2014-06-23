@@ -127,7 +127,7 @@ public class BluetoothSerialService {
 //        Listen isn 't working with Arduino. Ignore since assuming the phone will initiate the connection.
     }
 
-    public synchronized void listen() {
+ /*   public synchronized void listen() {
         setState(STATE_LISTEN);
 
         // Start the thread to listen on a BluetoothServerSocket
@@ -140,7 +140,7 @@ public class BluetoothSerialService {
             mInsecureAcceptThread.start();
         }
     }
-
+*/
 
     /**
      * See if there is an ongoing device discovery process going on.
