@@ -81,8 +81,6 @@ public class BluetoothSerialService {
 
         filter = new IntentFilter(BluetoothDevice.ACTION_FOUND);
         ctx.registerReceiver(_receiver, filter);
-
-        this.listen();
     }
 
     /**
@@ -124,7 +122,7 @@ public class BluetoothSerialService {
             mConnectedThread = null;
         }
 
-        listen();
+
 
 //        Listen isn 't working with Arduino. Ignore since assuming the phone will initiate the connection.
     }
